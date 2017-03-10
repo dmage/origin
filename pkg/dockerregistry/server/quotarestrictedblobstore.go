@@ -40,8 +40,7 @@ func newQuotaEnforcingConfig(ctx context.Context, enforceQuota, projectCacheTTL 
 	if !enforce {
 		context.GetLogger(ctx).Info("quota enforcement disabled")
 		return &quotaEnforcingConfig{
-			enforcementDisabled:  true,
-			projectCacheDisabled: true,
+			enforcementDisabled: true,
 		}
 	}
 
@@ -52,9 +51,7 @@ func newQuotaEnforcingConfig(ctx context.Context, enforceQuota, projectCacheTTL 
 
 	if ttl <= 0 {
 		context.GetLogger(ctx).Info("not using project caches for quota objects")
-		return &quotaEnforcingConfig{
-			projectCacheDisabled: true,
-		}
+		return &quotaEnforcingConfig{}
 	}
 
 	context.GetLogger(ctx).Infof("caching project quota objects with TTL %s", ttl.String())
@@ -68,8 +65,6 @@ func newQuotaEnforcingConfig(ctx context.Context, enforceQuota, projectCacheTTL 
 type quotaEnforcingConfig struct {
 	// if set, disables quota enforcement
 	enforcementDisabled bool
-	// if set, disables use of caching of quota objects per project
-	projectCacheDisabled bool
 	// a cache of limit range objects keyed by project name
 	limitRanges projectObjectListStore
 }
@@ -138,7 +133,7 @@ func (bw *quotaRestrictedBlobWriter) Commit(ctx context.Context, provisional dis
 
 // getLimitRangeList returns limit ranges for repo's namespace.
 func getLimitRangeList(ctx context.Context, repo *repository) (*kapi.LimitRangeList, error) {
-	if !quotaEnforcing.projectCacheDisabled {
+	if quotaEnforcing.limitRanges != nil {
 		obj, exists, _ := quotaEnforcing.limitRanges.get(repo.namespace)
 		if exists {
 			return obj.(*kapi.LimitRangeList), nil
@@ -153,7 +148,7 @@ func getLimitRangeList(ctx context.Context, repo *repository) (*kapi.LimitRangeL
 		return nil, err
 	}
 
-	if !quotaEnforcing.projectCacheDisabled {
+	if quotaEnforcing.limitRanges != nil {
 		err = quotaEnforcing.limitRanges.add(repo.namespace, lrs)
 		if err != nil {
 			context.GetLogger(ctx).Errorf("failed to cache limit range list: %v", err)
