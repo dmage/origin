@@ -15,7 +15,6 @@ package server
 import (
 	"time"
 
-	"github.com/Sirupsen/logrus"
 	"github.com/docker/distribution"
 	"github.com/docker/distribution/context"
 
@@ -34,7 +33,7 @@ const (
 func newQuotaEnforcingConfig(ctx context.Context, enforceQuota, projectCacheTTL string, options map[string]interface{}) *quotaEnforcingConfig {
 	enforce, err := getBoolOption(EnforceQuotaEnvVar, "enforcequota", false, options)
 	if err != nil {
-		logrus.Error(err)
+		context.GetLogger(ctx).Error(err)
 	}
 
 	if !enforce {
@@ -44,7 +43,7 @@ func newQuotaEnforcingConfig(ctx context.Context, enforceQuota, projectCacheTTL 
 
 	ttl, err := getDurationOption(ProjectCacheTTLEnvVar, "projectcachettl", defaultProjectCacheTTL, options)
 	if err != nil {
-		logrus.Error(err)
+		context.GetLogger(ctx).Error(err)
 	}
 
 	if ttl <= 0 {
