@@ -731,7 +731,6 @@ func (reg *testRegistry) Repository(ctx context.Context, ref reference.Named) (d
 		Repository: repo,
 
 		ctx:              ctx,
-		quotaClient:      kFakeClient.Core(),
 		limitClient:      kFakeClient.Core(),
 		registryOSClient: reg.osClient,
 		registryAddr:     "localhost:5000",
