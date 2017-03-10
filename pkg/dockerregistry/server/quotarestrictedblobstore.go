@@ -39,9 +39,7 @@ func newQuotaEnforcingConfig(ctx context.Context, enforceQuota, projectCacheTTL 
 
 	if !enforce {
 		context.GetLogger(ctx).Info("quota enforcement disabled")
-		return &quotaEnforcingConfig{
-			enforcementDisabled: true,
-		}
+		return &quotaEnforcingConfig{}
 	}
 
 	ttl, err := getDurationOption(ProjectCacheTTLEnvVar, "projectcachettl", defaultProjectCacheTTL, options)
@@ -51,21 +49,24 @@ func newQuotaEnforcingConfig(ctx context.Context, enforceQuota, projectCacheTTL 
 
 	if ttl <= 0 {
 		context.GetLogger(ctx).Info("not using project caches for quota objects")
-		return &quotaEnforcingConfig{}
+		return &quotaEnforcingConfig{
+			enforcementEnabled: true,
+		}
 	}
 
 	context.GetLogger(ctx).Infof("caching project quota objects with TTL %s", ttl.String())
 	return &quotaEnforcingConfig{
-		limitRanges: newProjectObjectListCache(ttl),
+		enforcementEnabled: true,
+		limitRanges:        newProjectObjectListCache(ttl),
 	}
 }
 
 // quotaEnforcingConfig holds configuration and caches of object lists keyed by project name. Caches are
 // thread safe and shall be reused by all middleware layers.
 type quotaEnforcingConfig struct {
-	// if set, disables quota enforcement
-	enforcementDisabled bool
-	// a cache of limit range objects keyed by project name
+	// if set, enables quota enforcement
+	enforcementEnabled bool
+	// if set, enables caching of quota objects per project
 	limitRanges projectObjectListStore
 }
 

@@ -271,7 +271,7 @@ func (r *repository) Manifests(ctx context.Context, options ...distribution.Mani
 func (r *repository) Blobs(ctx context.Context) distribution.BlobStore {
 	bs := r.Repository.Blobs(ctx)
 
-	if !quotaEnforcing.enforcementDisabled {
+	if quotaEnforcing.enforcementEnabled {
 		bs = &quotaRestrictedBlobStore{
 			BlobStore: bs,
 
