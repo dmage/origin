@@ -103,7 +103,7 @@ func init() {
 				panic(fmt.Sprintf("Configuration error: OpenShift storage driver middleware not activated"))
 			}
 
-			registryOSClient, kClient, errClients := RegistryClientFrom(ctx).Clients()
+			registryOSClient, limitClient, errClients := RegistryClientFrom(ctx).Clients()
 			if errClients != nil {
 				return nil, errClients
 			}
@@ -111,7 +111,7 @@ func init() {
 				quotaEnforcing = newQuotaEnforcingConfig(ctx, os.Getenv(EnforceQuotaEnvVar), os.Getenv(ProjectCacheTTLEnvVar), options)
 			}
 
-			return newRepositoryWithClient(ctx, registryOSClient, kClient.Core(), repo, options)
+			return newRepositoryWithClient(ctx, registryOSClient, limitClient, repo, options)
 		},
 	)
 

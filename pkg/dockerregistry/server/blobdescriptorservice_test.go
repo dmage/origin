@@ -23,8 +23,7 @@ import (
 	"github.com/docker/distribution/registry/storage"
 
 	registrytest "github.com/openshift/origin/pkg/dockerregistry/testutil"
-	kclientset "k8s.io/kubernetes/pkg/client/clientset_generated/internalclientset"
-	"k8s.io/kubernetes/pkg/client/clientset_generated/internalclientset/fake"
+	kcoreclient "k8s.io/kubernetes/pkg/client/clientset_generated/internalclientset/typed/core/internalversion"
 	"k8s.io/kubernetes/pkg/client/restclient"
 
 	osclient "github.com/openshift/origin/pkg/client"
@@ -63,7 +62,7 @@ func TestBlobDescriptorServiceIsApplied(t *testing.T) {
 	client.AddReactor("get", "images", registrytest.GetFakeImageGetHandler(t, *testImage))
 
 	ctx := context.Background()
-	ctx = WithRegistryClient(ctx, makeFakeRegistryClient(client, fake.NewSimpleClientset()))
+	ctx = WithRegistryClient(ctx, makeFakeRegistryClient(client, nil))
 	app := handlers.NewApp(ctx, &configuration.Configuration{
 		Loglevel: "debug",
 		Auth: map[string]configuration.Parameters{
@@ -495,20 +494,20 @@ func (f *fakeAccessController) Authorized(ctx context.Context, access ...registr
 	return ctx, nil
 }
 
-func makeFakeRegistryClient(client osclient.Interface, kClient kclientset.Interface) RegistryClient {
+func makeFakeRegistryClient(client osclient.Interface, limitClient kcoreclient.LimitRangesGetter) RegistryClient {
 	return &fakeRegistryClient{
-		client:  client,
-		kClient: kClient,
+		client:      client,
+		limitClient: limitClient,
 	}
 }
 
 type fakeRegistryClient struct {
-	client  osclient.Interface
-	kClient kclientset.Interface
+	client      osclient.Interface
+	limitClient kcoreclient.LimitRangesGetter
 }
 
-func (f *fakeRegistryClient) Clients() (osclient.Interface, kclientset.Interface, error) {
-	return f.client, f.kClient, nil
+func (f *fakeRegistryClient) Clients() (osclient.Interface, kcoreclient.LimitRangesGetter, error) {
+	return f.client, f.limitClient, nil
 }
 func (f *fakeRegistryClient) SafeClientConfig() restclient.Config {
 	return (&registryClient{}).SafeClientConfig()
