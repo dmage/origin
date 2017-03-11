@@ -92,7 +92,7 @@ func init() {
 	cachedLayers = cache
 
 	// load the client when the middleware is initialized, which allows test code to change
-	// DefaultRegistryClient before starting a registry.
+	// the registry client before starting a registry.
 	repomw.Register("openshift",
 		func(ctx context.Context, repo distribution.Repository, options map[string]interface{}) (distribution.Repository, error) {
 			if dockerRegistry == nil {
@@ -103,7 +103,7 @@ func init() {
 				panic(fmt.Sprintf("Configuration error: OpenShift storage driver middleware not activated"))
 			}
 
-			registryOSClient, kClient, errClients := DefaultRegistryClient.Clients()
+			registryOSClient, kClient, errClients := RegistryClientFrom(ctx).Clients()
 			if errClients != nil {
 				return nil, errClients
 			}

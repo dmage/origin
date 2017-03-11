@@ -55,9 +55,6 @@ type RegistryClient interface {
 	SafeClientConfig() restclient.Config
 }
 
-// DefaultRegistryClient is exposed for testing the registry with fake client.
-var DefaultRegistryClient = NewRegistryClient(clientcmd.NewConfig().BindToFile())
-
 // registryClient implements RegistryClient
 type registryClient struct {
 	config *clientcmd.Config
@@ -85,9 +82,7 @@ func init() {
 	registryauth.Register(OpenShiftAuth, registryauth.InitFunc(newAccessController))
 }
 
-type contextKey int
-
-var userClientKey contextKey = 0
+var userClientKey contextKey = "userClient"
 
 func WithUserClient(parent context.Context, userClient client.Interface) context.Context {
 	return context.WithValue(parent, userClientKey, userClient)
@@ -201,6 +196,11 @@ func TokenRealm(options map[string]interface{}) (*url.URL, error) {
 func newAccessController(options map[string]interface{}) (registryauth.AccessController, error) {
 	log.Info("Using Origin Auth handler")
 
+	ctx, ok := options["_context"].(context.Context)
+	if !ok {
+		return nil, fmt.Errorf("no context provided to Origin Auth handler")
+	}
+
 	realm, err := getStringOption("", RealmKey, "origin", options)
 	if err != nil {
 		return nil, err
@@ -214,7 +214,7 @@ func newAccessController(options map[string]interface{}) (registryauth.AccessCon
 	ac := &AccessController{
 		realm:      realm,
 		tokenRealm: tokenRealm,
-		config:     DefaultRegistryClient.SafeClientConfig(),
+		config:     RegistryClientFrom(ctx).SafeClientConfig(),
 	}
 
 	if audit, ok := options["audit"]; ok {

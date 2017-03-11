@@ -391,20 +391,20 @@ func TestAccessController(t *testing.T) {
 		if len(test.bearerToken) > 0 {
 			req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", test.bearerToken))
 		}
-		ctx := context.WithValue(context.Background(), "http.request", req)
 
 		server, actions := simulateOpenShiftMaster(test.openshiftResponses)
-		DefaultRegistryClient = NewRegistryClient(&clientcmd.Config{
+		options["_context"] = WithRegistryClient(context.Background(), NewRegistryClient(&clientcmd.Config{
 			CommonConfig: restclient.Config{
 				Host:     server.URL,
 				Insecure: true,
 			},
 			SkipEnv: true,
-		})
+		}))
 		accessController, err := newAccessController(options)
 		if err != nil {
 			t.Fatal(err)
 		}
+		ctx := context.WithValue(context.Background(), "http.request", req)
 		authCtx, err := accessController.Authorized(ctx, test.access...)
 		server.Close()
 
