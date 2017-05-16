@@ -18,6 +18,7 @@ import (
 	"github.com/openshift/origin/pkg/util/httprequest"
 
 	"github.com/openshift/origin/pkg/dockerregistry/server/audit"
+	"github.com/openshift/origin/pkg/dockerregistry/server/metrics"
 	"github.com/openshift/origin/pkg/dockerregistry/server/oapi"
 )
 
@@ -65,10 +66,11 @@ func WithUserInfoLogger(ctx context.Context, username, userid string) context.Co
 }
 
 type AccessController struct {
-	realm      string
-	tokenRealm *url.URL
-	client     oapi.RegistryClient
-	auditLog   bool
+	realm          string
+	tokenRealm     *url.URL
+	client         oapi.RegistryClient
+	auditLog       bool
+	metricsEnabled bool
 }
 
 var _ registryauth.AccessController = &AccessController{}
@@ -135,6 +137,7 @@ func TokenRealm(options map[string]interface{}) (*url.URL, error) {
 type AccessControllerParams struct {
 	Logger         context.Logger
 	RegistryClient oapi.RegistryClient
+	MetricsEnabled bool
 }
 
 func newAccessController(options map[string]interface{}) (registryauth.AccessController, error) {
@@ -156,9 +159,10 @@ func newAccessController(options map[string]interface{}) (registryauth.AccessCon
 	}
 
 	ac := &AccessController{
-		realm:      realm,
-		tokenRealm: tokenRealm,
-		client:     params.RegistryClient,
+		realm:          realm,
+		tokenRealm:     tokenRealm,
+		client:         params.RegistryClient,
+		metricsEnabled: params.MetricsEnabled,
 	}
 
 	if audit, ok := options["audit"]; ok {
@@ -271,6 +275,11 @@ func (ac *AccessController) Authorized(ctx context.Context, accessRecords ...reg
 	osClient, err := ac.client.UserClient(bearerToken)
 	if err != nil {
 		return nil, ac.wrapErr(ctx, err)
+	}
+
+	if ac.metricsEnabled {
+		osClient = metrics.NewOAPIClient(osClient)
+		context.GetLogger(ctx).Debugf("Origin auth: metrics enabled")
 	}
 
 	// In case of docker login, hits endpoint /v2

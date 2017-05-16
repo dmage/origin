@@ -62,6 +62,10 @@ func Execute(configFile io.Reader) {
 		log.Fatalf("error configuring logger: %v", err)
 	}
 
+	if extraConfig.Metrics.Enabled && len(extraConfig.Metrics.Secret) == 0 {
+		log.Fatalf("openshift.metrics.secret field cannot be empty when metrics are enabled")
+	}
+
 	registryClient := oapi.NewRegistryClient(clientcmd.NewConfig().BindToFile())
 	ctx = server.WithRegistryClient(ctx, registryClient)
 
@@ -78,6 +82,7 @@ func Execute(configFile io.Reader) {
 		dockerConfig.Auth[server.OpenShiftAuth][server.AccessControllerOptionParams] = server.AccessControllerParams{
 			Logger:         context.GetLogger(ctx),
 			RegistryClient: registryClient,
+			MetricsEnabled: extraConfig.Metrics.Enabled,
 		}
 	}
 
@@ -89,7 +94,7 @@ func Execute(configFile io.Reader) {
 		if err != nil {
 			context.GetLogger(app).Fatalf("error setting up token auth: %s", err)
 		}
-		err = app.NewRoute().Methods("GET").PathPrefix(tokenRealm.Path).Handler(server.NewTokenHandler(ctx, registryClient)).GetError()
+		err = app.NewRoute().Methods("GET").PathPrefix(tokenRealm.Path).Handler(server.NewTokenHandler(ctx, registryClient, extraConfig.Metrics.Enabled)).GetError()
 		if err != nil {
 			context.GetLogger(app).Fatalf("error setting up token endpoint at %q: %v", tokenRealm.Path, err)
 		}
@@ -126,9 +131,6 @@ func Execute(configFile io.Reader) {
 
 	// Registry extensions endpoint provides prometheus metrics.
 	if extraConfig.Metrics.Enabled {
-		if len(extraConfig.Metrics.Secret) == 0 {
-			context.GetLogger(app).Fatalf("openshift.metrics.secret field cannot be empty when metrics are enabled")
-		}
 		server.RegisterMetricHandler(app)
 	}
 

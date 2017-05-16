@@ -8,19 +8,22 @@ import (
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
+	"github.com/openshift/origin/pkg/dockerregistry/server/metrics"
 	"github.com/openshift/origin/pkg/dockerregistry/server/oapi"
 )
 
 type tokenHandler struct {
-	ctx    context.Context
-	client oapi.RegistryClient
+	ctx            context.Context
+	client         oapi.RegistryClient
+	metricsEnabled bool
 }
 
 // NewTokenHandler returns a handler that implements the docker token protocol
-func NewTokenHandler(ctx context.Context, client oapi.RegistryClient) http.Handler {
+func NewTokenHandler(ctx context.Context, client oapi.RegistryClient, metricsEnabled bool) http.Handler {
 	return &tokenHandler{
-		ctx:    ctx,
-		client: client,
+		ctx:            ctx,
+		client:         client,
+		metricsEnabled: metricsEnabled,
 	}
 }
 
@@ -52,6 +55,10 @@ func (t *tokenHandler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		context.GetRequestLogger(ctx).Errorf("error building client: %v", err)
 		t.writeError(w, req)
 		return
+	}
+
+	if t.metricsEnabled {
+		osClient = metrics.NewOAPIClient(osClient)
 	}
 
 	if _, err := osClient.Users().Get("~", metav1.GetOptions{}); err != nil {
