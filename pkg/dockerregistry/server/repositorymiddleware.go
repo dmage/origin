@@ -333,6 +333,11 @@ func (r *repository) Blobs(ctx context.Context) distribution.BlobStore {
 		}
 	}
 
+	blobStoreFactory, ok := BlobStoreFactoryFrom(ctx)
+	if ok {
+		bs = blobStoreFactory.WrapBlobStore(bs)
+	}
+
 	return bs
 }
 

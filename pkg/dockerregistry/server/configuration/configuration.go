@@ -26,8 +26,9 @@ type openshiftConfig struct {
 }
 
 type Configuration struct {
-	Version configuration.Version `yaml:"version"`
-	Metrics Metrics               `yaml:"metrics"`
+	Version    configuration.Version `yaml:"version"`
+	Metrics    Metrics               `yaml:"metrics"`
+	MaxWriters int                   `yaml:"maxwriters"`
 }
 
 type Metrics struct {
