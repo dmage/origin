@@ -366,31 +366,8 @@ func (d *driver) GetContent(ctx context.Context, path string) ([]byte, error) {
 
 // PutContent stores the []byte content at a location designated by "path".
 func (d *driver) PutContent(ctx context.Context, path string, contents []byte) error {
-	/*
-		_, err := d.S3.PutObject(&s3.PutObjectInput{
-			Bucket:               aws.String(d.Bucket),
-			Key:                  aws.String(d.s3Path(path)),
-			ContentType:          d.getContentType(),
-			ACL:                  d.getACL(),
-			ServerSideEncryption: d.getEncryptionMode(),
-			SSEKMSKeyId:          d.getSSEKMSKeyID(),
-			StorageClass:         d.getStorageClass(),
-			Body:                 bytes.NewReader(contents),
-		})
-		return parseError(path, err)
-	*/
-
-	/*
-		log.Printf("PutContent [%s] [%s]", path, contents)
-		log.Printf("xxx %v xxx %v xxx", d.Bucket, d.s3Path(path))
-		h := sha256.New()
-		h.Write(contents)
-		hash := fmt.Sprintf("%x", h.Sum(nil))
-		hash = hash
-	*/
 	_, err := d.S3.PutObject(d.Bucket, d.s3Path(path), int64(len(contents)), bytes.NewReader(contents), nil, nil, map[string][]string{
 		"Content-Type": []string{d.getContentType()},
-		//"ACL":          d.getACL(),
 	})
 	return err
 }
@@ -403,16 +380,6 @@ func (d *driver) Reader(ctx context.Context, path string, offset int64) (io.Read
 			"Range": {"bytes=" + strconv.FormatInt(offset, 10) + "-"},
 		},
 	})
-
-	/*
-		if err != nil {
-			if s3Err, ok := err.(awserr.Error); ok && s3Err.Code() == "InvalidRange" {
-				return ioutil.NopCloser(bytes.NewReader(nil)), nil
-			}
-
-			return nil, parseError(path, err)
-		}
-	*/
 	return reader, err
 }
 
@@ -613,11 +580,10 @@ func (d *driver) Delete(ctx context.Context, path string) error {
 // URLFor returns a URL which may be used to retrieve the content stored at the given path.
 // May return an UnsupportedMethodErr in certain StorageDriver implementations.
 func (d *driver) URLFor(ctx context.Context, path string, options map[string]interface{}) (string, error) {
-	methodString := "GET"
 	method, ok := options["method"]
 	if ok {
-		methodString, ok = method.(string)
-		if !ok || (methodString != "GET" && methodString != "HEAD") {
+		methodString, ok := method.(string)
+		if !ok || methodString != "GET" {
 			return "", storagedriver.ErrUnsupportedMethod{}
 		}
 	}
@@ -631,21 +597,11 @@ func (d *driver) URLFor(ctx context.Context, path string, options map[string]int
 		}
 	}
 
-	switch methodString {
-	case "GET":
-		u, err := d.S3.PresignedGetObject(d.Bucket, d.s3Path(path), expiresIn, nil)
-		if err != nil {
-			return "", err
-		}
-		return u.String(), nil
-	case "HEAD":
-		u, err := d.S3.PresignedHeadObject(d.Bucket, d.s3Path(path), expiresIn, nil)
-		if err != nil {
-			return "", err
-		}
-		return u.String(), nil
+	u, err := d.S3.PresignedGetObject(d.Bucket, d.s3Path(path), expiresIn, nil)
+	if err != nil {
+		return "", err
 	}
-	panic("unreachable")
+	return u.String(), nil
 }
 
 func (d *driver) s3Path(path string) string {

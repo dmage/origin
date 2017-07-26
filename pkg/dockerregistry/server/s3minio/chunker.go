@@ -1,9 +1,6 @@
 package s3
 
-import (
-	"io"
-	"log"
-)
+import "io"
 
 type Chunker struct {
 	Size int
@@ -33,7 +30,6 @@ func (c *Chunker) ensureWriter() error {
 
 func (c *Chunker) Write(buf []byte) (int, error) {
 	if len(buf) == 0 {
-		log.Println("written0")
 		return 0, nil
 	}
 
@@ -41,7 +37,6 @@ func (c *Chunker) Write(buf []byte) (int, error) {
 	for len(buf) > 0 {
 		err := c.ensureWriter()
 		if err != nil {
-			log.Println("written1", written)
 			return written, err
 		}
 
@@ -54,11 +49,9 @@ func (c *Chunker) Write(buf []byte) (int, error) {
 		written += n
 		c.n += n
 		if err != nil {
-			log.Println("written2", written)
 			return written, err
 		}
 	}
-	log.Println("written3", written)
 	return written, nil
 }
 

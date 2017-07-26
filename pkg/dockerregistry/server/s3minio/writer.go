@@ -16,7 +16,6 @@ import (
 	"io"
 	"sort"
 
-	log "github.com/Sirupsen/logrus"
 	"github.com/minio/minio-go"
 
 	"github.com/docker/distribution/context"
@@ -30,55 +29,6 @@ type completedParts []minio.CompletePart
 func (a completedParts) Len() int           { return len(a) }
 func (a completedParts) Swap(i, j int)      { a[i], a[j] = a[j], a[i] }
 func (a completedParts) Less(i, j int) bool { return a[i].PartNumber < a[j].PartNumber }
-
-type zeroReader struct {
-}
-
-func (r zeroReader) Read(buf []byte) (int, error) {
-	for i := range buf {
-		buf[i] = 0
-	}
-	return len(buf), nil
-}
-
-type zeroPaddedWriter struct {
-	Size int
-	W    io.WriteCloser
-	n    int
-}
-
-func (w *zeroPaddedWriter) Write(buf []byte) (int, error) {
-	n, err := w.W.Write(buf)
-	w.n += n
-	return n, err
-}
-
-func (w *zeroPaddedWriter) Close() error {
-	if w.n < w.Size {
-		log.Println("PADDING", int64(w.Size-w.n))
-		n, err := io.Copy(w.W, io.LimitReader(zeroReader{}, int64(w.Size-w.n)))
-		w.n += int(n)
-		if err != nil {
-			return err
-		}
-	}
-	return w.W.Close()
-}
-
-type objectPartWriter struct {
-	io.WriteCloser
-	done   chan struct{}
-	putErr error
-}
-
-func (w *objectPartWriter) Close() error {
-	err := w.WriteCloser.Close()
-	if err != nil {
-		return err
-	}
-	<-w.done
-	return w.putErr
-}
 
 // writer attempts to upload parts to S3 in a buffered fashion where the last
 // part is at least as large as the chunksize, so the multipart upload could be
@@ -96,6 +46,43 @@ type writer struct {
 	cancelled bool
 }
 
+type objectPartWriter struct {
+	io.WriteCloser
+	w    *writer
+	done chan struct{}
+	part minio.ObjectPart
+	err  error
+}
+
+func newObjectPartWriter(w *writer, chunkSize int64) *objectPartWriter {
+	opw := &objectPartWriter{
+		w:    w,
+		done: make(chan struct{}),
+	}
+	pipeReader, pipeWriter := io.Pipe()
+	go func() {
+		opw.part, opw.err = w.driver.S3.PutObjectPart(w.driver.Bucket, w.key, w.uploadID, len(w.parts)+1, chunkSize, pipeReader, nil, nil)
+		close(opw.done)
+	}()
+	opw.WriteCloser = &zeroPaddedWriter{
+		W:    pipeWriter,
+		Size: chunkSize,
+	}
+	return opw
+}
+
+func (opw *objectPartWriter) Close() error {
+	err := opw.WriteCloser.Close()
+	if err != nil {
+		return err
+	}
+	<-opw.done
+	if opw.err != nil {
+		opw.w.parts = append(opw.w.parts, opw.part)
+	}
+	return opw.err
+}
+
 func newWriter(d *driver, key, uploadID string, parts []minio.ObjectPart, size int64) storagedriver.FileWriter {
 	w := &writer{
 		driver:   d,
@@ -107,21 +94,7 @@ func newWriter(d *driver, key, uploadID string, parts []minio.ObjectPart, size i
 	w.chunker = Chunker{
 		Size: chunkSize,
 		New: func() io.WriteCloser {
-			partWriter := &objectPartWriter{
-				done: make(chan struct{}),
-			}
-			pipeReader, pipeWriter := io.Pipe()
-			go func() {
-				var part minio.ObjectPart
-				part, partWriter.putErr = d.S3.PutObjectPart(d.Bucket, key, uploadID, len(w.parts)+1, chunkSize, pipeReader, nil, nil)
-				w.parts = append(w.parts, part)
-				close(partWriter.done)
-			}()
-			partWriter.WriteCloser = &zeroPaddedWriter{
-				W:    pipeWriter,
-				Size: int(chunkSize),
-			}
-			return partWriter
+			return newObjectPartWriter(w, chunkSize)
 		},
 	}
 	return w
