@@ -23,7 +23,6 @@ import (
 	"time"
 
 	log "github.com/Sirupsen/logrus"
-	"github.com/aws/aws-sdk-go/aws"
 	"github.com/minio/minio-go"
 
 	"github.com/docker/distribution/context"
@@ -386,46 +385,10 @@ func (d *driver) Reader(ctx context.Context, path string, offset int64) (io.Read
 // Writer returns a FileWriter which will store the content written to it
 // at the location designated by "path" after the call to Commit.
 func (d *driver) Writer(ctx context.Context, path string, append bool) (storagedriver.FileWriter, error) {
-	key := d.s3Path(path)
-	if !append {
-		// TODO (brianbland): cancel other uploads at this path
-		uploadID, err := d.S3.NewMultipartUpload(d.Bucket, key, nil)
-		if err != nil {
-			return nil, err
-		}
-		return d.newWriter(key, uploadID, nil, 0), nil
+	if append {
+		return resumeWriter(ctx, d, path)
 	}
-
-	log.Println("RESUMING...")
-	resp, err := d.S3.ListMultipartUploads(d.Bucket, key, "", "", "", 0)
-	if err != nil {
-		return nil, err
-	}
-
-	for _, multi := range resp.Uploads {
-		if key != multi.Key {
-			continue
-		}
-		resp, err := d.S3.ListObjectParts(d.Bucket, key, multi.UploadID, 0, 0)
-		if err != nil {
-			return nil, err
-		}
-		log.Println("RESUMING USING", resp)
-		var multiSize int64
-		for _, part := range resp.ObjectParts {
-			multiSize += part.Size
-		}
-		buf, err := d.GetContent(ctx, key+".size")
-		if err != nil {
-			return nil, err
-		}
-		size, err := strconv.Atoi(string(buf))
-		if err != nil {
-			return nil, err
-		}
-		return d.newWriter(key, multi.UploadID, resp.ObjectParts, int64(size)), nil
-	}
-	return nil, storagedriver.PathNotFoundError{Path: path}
+	return createWriter(d, path)
 }
 
 // Stat retrieves the FileInfo for the given path, including the current size
@@ -613,23 +576,6 @@ func (d *Driver) S3BucketKey(path string) string {
 	return d.StorageDriver.(*driver).s3Path(path)
 }
 
-func (d *driver) getEncryptionMode() *string {
-	if !d.Encrypt {
-		return nil
-	}
-	if d.KeyID == "" {
-		return aws.String("AES256")
-	}
-	return aws.String("aws:kms")
-}
-
-func (d *driver) getSSEKMSKeyID() *string {
-	if d.KeyID != "" {
-		return aws.String(d.KeyID)
-	}
-	return nil
-}
-
 func (d *driver) getContentType() string {
 	return "application/octet-stream"
 }
@@ -638,17 +584,6 @@ func (d *driver) getACL() string {
 	return "private"
 }
 
-func (d *driver) getStorageClass() *string {
-	return aws.String(d.StorageClass)
-}
-
-func (d *driver) newWriter(key, uploadID string, parts []minio.ObjectPart, size int64) storagedriver.FileWriter {
-	log.Printf("driver.newWriter(%v, %v, %v)", key, uploadID, parts)
-	/*
-		var size int64
-		for _, part := range parts {
-			size += part.Size
-		}
-	*/
-	return newWriter(d, key, uploadID, parts, size)
+func (d *driver) getStorageClass() string {
+	return d.StorageClass
 }
