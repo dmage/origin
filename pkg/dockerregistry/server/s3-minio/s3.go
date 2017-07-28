@@ -22,7 +22,6 @@ import (
 	"strings"
 	"time"
 
-	log "github.com/Sirupsen/logrus"
 	"github.com/minio/minio-go"
 
 	"github.com/docker/distribution/context"
@@ -33,59 +32,35 @@ import (
 
 const driverName = "s3minio"
 
-// minChunkSize defines the minimum multipart upload chunk size
-// S3 API requires multipart upload chunks to be at least 5MB
+// minChunkSize defines the minimum multipart upload chunk size.
+// S3 API requires multipart upload chunks to be at least 5MB.
 const minChunkSize = 5 << 20
 
-const defaultChunkSize = 2 * minChunkSize
+const defaultChunkSize = minChunkSize
 
-// listMax is the largest amount of objects you can request from S3 in a list call
+// listMax is the largest amount of objects you can request from S3 in a list call.
 const listMax = 1000
 
-// validRegions maps known s3 region identifiers to region descriptors
-var validRegions = map[string]struct{}{}
-
-//DriverParameters A struct that encapsulates all of the driver parameters after all values have been set
+// DriverParameters is a struct that encapsulates all of the driver parameters after all values have been set.
 type DriverParameters struct {
-	AccessKey      string
-	SecretKey      string
-	Bucket         string
-	Region         string
-	RegionEndpoint string
-	Encrypt        bool
-	KeyID          string
-	Secure         bool
-	ChunkSize      int64
-	RootDirectory  string
-	StorageClass   string
-	UserAgent      string
+	AccessKey     string
+	SecretKey     string
+	Bucket        string
+	Endpoint      string
+	Secure        bool
+	ChunkSize     int64
+	RootDirectory string
 }
 
 func init() {
-	for _, region := range []string{
-		"us-east-1",
-		"us-east-2",
-		"us-west-1",
-		"us-west-2",
-		"eu-west-1",
-		"eu-west-2",
-		"eu-central-1",
-		"ap-south-1",
-		"ap-southeast-1",
-		"ap-southeast-2",
-		"ap-northeast-1",
-		"ap-northeast-2",
-		"sa-east-1",
-		"cn-north-1",
-		"us-gov-west-1",
-		"ca-central-1",
-	} {
-		validRegions[region] = struct{}{}
-	}
-
-	// Register this as the default s3 driver in addition to s3aws
-	factory.Register("s3", &s3DriverFactory{})
 	factory.Register(driverName, &s3DriverFactory{})
+}
+
+func parseError(path string, err error) error {
+	if e, ok := err.(minio.ErrorResponse); ok && e.Code == "NoSuchKey" {
+		return storagedriver.PathNotFoundError{Path: path}
+	}
+	return err
 }
 
 // s3DriverFactory implements the factory.StorageDriverFactory interface
@@ -99,10 +74,7 @@ type driver struct {
 	S3            *minio.Core
 	Bucket        string
 	ChunkSize     int64
-	Encrypt       bool
-	KeyID         string
 	RootDirectory string
-	StorageClass  string
 }
 
 type baseEmbed struct {
@@ -119,9 +91,8 @@ type Driver struct {
 // Required parameters:
 // - accesskey
 // - secretkey
-// - region
+// - endpoint
 // - bucket
-// - encrypt
 func FromParameters(parameters map[string]interface{}) (*Driver, error) {
 	// Providing no values for these is valid in case the user is authenticating
 	// with an IAM on an ec2 instance (in which case the instance credentials will
@@ -140,38 +111,9 @@ func FromParameters(parameters map[string]interface{}) (*Driver, error) {
 		regionEndpoint = ""
 	}
 
-	regionName, ok := parameters["region"]
-	if regionName == nil || fmt.Sprint(regionName) == "" {
-		return nil, fmt.Errorf("No region parameter provided")
-	}
-	region := fmt.Sprint(regionName)
-	// Don't check the region value if a custom endpoint is provided.
-	if regionEndpoint == "" {
-		if _, ok = validRegions[region]; !ok {
-			return nil, fmt.Errorf("Invalid region provided: %v", region)
-		}
-	}
-
 	bucket := parameters["bucket"]
 	if bucket == nil || fmt.Sprint(bucket) == "" {
 		return nil, fmt.Errorf("No bucket parameter provided")
-	}
-
-	encryptBool := false
-	encrypt := parameters["encrypt"]
-	switch encrypt := encrypt.(type) {
-	case string:
-		b, err := strconv.ParseBool(encrypt)
-		if err != nil {
-			return nil, fmt.Errorf("The encrypt parameter should be a boolean")
-		}
-		encryptBool = b
-	case bool:
-		encryptBool = encrypt
-	case nil:
-		// do nothing
-	default:
-		return nil, fmt.Errorf("The encrypt parameter should be a boolean")
 	}
 
 	secureBool := true
@@ -189,11 +131,6 @@ func FromParameters(parameters map[string]interface{}) (*Driver, error) {
 		// do nothing
 	default:
 		return nil, fmt.Errorf("The secure parameter should be a boolean")
-	}
-
-	keyID := parameters["keyid"]
-	if keyID == nil {
-		keyID = ""
 	}
 
 	chunkSize := int64(defaultChunkSize)
@@ -224,119 +161,30 @@ func FromParameters(parameters map[string]interface{}) (*Driver, error) {
 		rootDirectory = ""
 	}
 
-	/*
-		storageClass := s3.StorageClassStandard
-		storageClassParam := parameters["storageclass"]
-		if storageClassParam != nil {
-			storageClassString, ok := storageClassParam.(string)
-			if !ok {
-				return nil, fmt.Errorf("The storageclass parameter must be one of %v, %v invalid", []string{s3.StorageClassStandard, s3.StorageClassReducedRedundancy}, storageClassParam)
-			}
-			// All valid storage class parameters are UPPERCASE, so be a bit more flexible here
-			storageClassString = strings.ToUpper(storageClassString)
-			if storageClassString != s3.StorageClassStandard && storageClassString != s3.StorageClassReducedRedundancy {
-				return nil, fmt.Errorf("The storageclass parameter must be one of %v, %v invalid", []string{s3.StorageClassStandard, s3.StorageClassReducedRedundancy}, storageClassParam)
-			}
-			storageClass = storageClassString
-		}
-	*/
-
-	userAgent := parameters["useragent"]
-	if userAgent == nil {
-		userAgent = ""
-	}
-
 	params := DriverParameters{
-		fmt.Sprint(accessKey),
-		fmt.Sprint(secretKey),
-		fmt.Sprint(bucket),
-		region,
-		fmt.Sprint(regionEndpoint),
-		encryptBool,
-		fmt.Sprint(keyID),
-		secureBool,
-		chunkSize,
-		fmt.Sprint(rootDirectory),
-		"", //storageClass,
-		fmt.Sprint(userAgent),
+		AccessKey:     fmt.Sprint(accessKey),
+		SecretKey:     fmt.Sprint(secretKey),
+		Bucket:        fmt.Sprint(bucket),
+		Endpoint:      fmt.Sprint(regionEndpoint),
+		Secure:        secureBool,
+		ChunkSize:     chunkSize,
+		RootDirectory: fmt.Sprint(rootDirectory),
 	}
-
 	return New(params)
 }
 
-// New constructs a new Driver with the given AWS credentials, region, encryption flag, and
-// bucketName
+// New constructs a new Driver with the given parameters.
 func New(params DriverParameters) (*Driver, error) {
-	/*
-		awsConfig := aws.NewConfig()
-		var creds *credentials.Credentials
-		if params.RegionEndpoint == "" {
-			creds = credentials.NewChainCredentials([]credentials.Provider{
-				&credentials.StaticProvider{
-					Value: credentials.Value{
-						AccessKeyID:     params.AccessKey,
-						SecretAccessKey: params.SecretKey,
-					},
-				},
-				&credentials.EnvProvider{},
-				&credentials.SharedCredentialsProvider{},
-				&ec2rolecreds.EC2RoleProvider{Client: ec2metadata.New(session.New())},
-			})
-
-		} else {
-			creds = credentials.NewChainCredentials([]credentials.Provider{
-				&credentials.StaticProvider{
-					Value: credentials.Value{
-						AccessKeyID:     params.AccessKey,
-						SecretAccessKey: params.SecretKey,
-					},
-				},
-				&credentials.EnvProvider{},
-			})
-			awsConfig.WithS3ForcePathStyle(true)
-			awsConfig.WithEndpoint(params.RegionEndpoint)
-		}
-
-		awsConfig.WithCredentials(creds)
-		awsConfig.WithRegion(params.Region)
-		awsConfig.WithDisableSSL(!params.Secure)
-
-		if params.UserAgent != "" {
-			awsConfig.WithHTTPClient(&http.Client{
-				Transport: transport.NewTransport(http.DefaultTransport, transport.NewHeaderRequestModifier(http.Header{http.CanonicalHeaderKey("User-Agent"): []string{params.UserAgent}})),
-			})
-		}
-	*/
-
-	//New(session.New(awsConfig))
-	s3obj, err := minio.NewCore(params.RegionEndpoint, params.AccessKey, params.SecretKey, params.Secure)
+	s3obj, err := minio.NewCore(params.Endpoint, params.AccessKey, params.SecretKey, params.Secure)
 	if err != nil {
 		return nil, err
 	}
-
-	// TODO Currently multipart uploads have no timestamps, so this would be unwise
-	// if you initiated a new s3driver while another one is running on the same bucket.
-	// multis, _, err := bucket.ListMulti("", "")
-	// if err != nil {
-	// 	return nil, err
-	// }
-
-	// for _, multi := range multis {
-	// 	err := multi.Abort()
-	// 	//TODO appropriate to do this error checking?
-	// 	if err != nil {
-	// 		return nil, err
-	// 	}
-	// }
 
 	d := &driver{
 		S3:            s3obj,
 		Bucket:        params.Bucket,
 		ChunkSize:     params.ChunkSize,
-		Encrypt:       params.Encrypt,
-		KeyID:         params.KeyID,
 		RootDirectory: params.RootDirectory,
-		StorageClass:  params.StorageClass,
 	}
 
 	return &Driver{
@@ -379,7 +227,7 @@ func (d *driver) Reader(ctx context.Context, path string, offset int64) (io.Read
 			"Range": {"bytes=" + strconv.FormatInt(offset, 10) + "-"},
 		},
 	})
-	return reader, err
+	return reader, parseError(path, err)
 }
 
 // Writer returns a FileWriter which will store the content written to it
@@ -484,12 +332,7 @@ func (d *driver) Move(ctx context.Context, sourcePath string, destPath string) e
 	}
 
 	src := minio.NewSourceInfo(d.Bucket, d.s3Path(sourcePath), nil)
-	buf, _ := d.GetContent(ctx, sourcePath+".size")
-	size, err := strconv.Atoi(string(buf))
-	if err != nil {
-		log.Println("COPYING", size)
-		src.SetRange(0, int64(size)-1)
-	}
+
 	err = d.S3.CopyObject(dst, src)
 	if err != nil {
 		return err
@@ -500,44 +343,49 @@ func (d *driver) Move(ctx context.Context, sourcePath string, destPath string) e
 
 // Delete recursively deletes all objects stored at "path" and its subpaths.
 func (d *driver) Delete(ctx context.Context, path string) error {
-	/*
+	objectsCh := make(chan string)
+	errorCh := d.S3.RemoveObjects(d.Bucket, objectsCh)
+
+	var removeErr error
+	done := make(chan struct{})
+	go func() {
+		removeObjectError, ok := <-errorCh
+		if ok {
+			removeErr = removeObjectError.Err
+		}
+		close(done)
+		for range errorCh {
+		}
+	}()
+
+Loop:
+	for {
 		resp, err := d.S3.ListObjects(d.Bucket, d.s3Path(path), "", "", 0)
-		if err != nil || len(resp.Contents) == 0 {
-			return storagedriver.PathNotFoundError{Path: path}
+		if err != nil {
+			close(objectsCh)
+			return err
 		}
-
-		s3Objects := make([]*s3.ObjectIdentifier, 0, listMax)
-
-		for len(resp.Contents) > 0 {
-			for _, key := range resp.Contents {
-				s3Objects = append(s3Objects, &s3.ObjectIdentifier{
-					Key: key.Key,
-				})
-			}
-
-			_, err := d.S3.DeleteObjects(&s3.DeleteObjectsInput{
-				Bucket: aws.String(d.Bucket),
-				Delete: &s3.Delete{
-					Objects: s3Objects,
-					Quiet:   aws.Bool(false),
-				},
-			})
-			if err != nil {
-				return nil
-			}
-
-			resp, err = d.S3.ListObjects(&s3.ListObjectsInput{
-				Bucket: aws.String(d.Bucket),
-				Prefix: aws.String(d.s3Path(path)),
-			})
-			if err != nil {
-				return err
+		if len(resp.Contents) == 0 {
+			break
+		}
+		for _, key := range resp.Contents {
+			select {
+			case <-ctx.Done():
+				break Loop
+			case <-done:
+				break Loop
+			case objectsCh <- key.Key:
 			}
 		}
-	*/
+	}
+	close(objectsCh)
 
-	return nil
-	return fmt.Errorf("delete? nope!")
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-done:
+	}
+	return removeErr
 }
 
 // URLFor returns a URL which may be used to retrieve the content stored at the given path.
@@ -571,19 +419,10 @@ func (d *driver) s3Path(path string) string {
 	return strings.TrimLeft(strings.TrimRight(d.RootDirectory, "/")+path, "/")
 }
 
-// S3BucketKey returns the s3 bucket key for the given storage driver path.
-func (d *Driver) S3BucketKey(path string) string {
-	return d.StorageDriver.(*driver).s3Path(path)
-}
-
 func (d *driver) getContentType() string {
 	return "application/octet-stream"
 }
 
 func (d *driver) getACL() string {
 	return "private"
-}
-
-func (d *driver) getStorageClass() string {
-	return d.StorageClass
 }

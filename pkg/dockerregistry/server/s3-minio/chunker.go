@@ -1,6 +1,9 @@
 package s3
 
-import "io"
+import (
+	"fmt"
+	"io"
+)
 
 type Chunker struct {
 	Size int
@@ -58,9 +61,11 @@ func (c *Chunker) Write(buf []byte) (int, error) {
 func (c *Chunker) Close() error {
 	if c.w != nil {
 		err := c.w.Close()
+		fmt.Println("CHUNKER CLOSE ERR", err)
 		c.w = nil
 		c.n = 0
 		return err
 	}
+	fmt.Println("CHUNKER CLOSED WITHOUT WRITER")
 	return nil
 }

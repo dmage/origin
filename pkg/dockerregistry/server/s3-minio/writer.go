@@ -15,6 +15,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"io/ioutil"
 	"sort"
 
 	"github.com/minio/minio-go"
@@ -60,7 +61,7 @@ type writerMeta struct {
 }
 
 func writerMetaObject(path string) string {
-	return path + ".meta"
+	return path + ".tmp/meta"
 }
 
 func loadWriterMeta(ctx context.Context, d *driver, path string) (writerMeta, error) {
@@ -71,14 +72,16 @@ func loadWriterMeta(ctx context.Context, d *driver, path string) (writerMeta, er
 		return meta, err
 	}
 
-	err = json.Unmarshal(data, &meta)
-	return meta, err
+	if err := json.Unmarshal(data, &meta); err != nil {
+		return meta, fmt.Errorf("error unmarshalling writer metadata %s: %v", path, err)
+	}
+	return meta, nil
 }
 
 func (m writerMeta) store(ctx context.Context, d *driver, path string) error {
 	data, err := json.Marshal(m)
 	if err != nil {
-		return err
+		return fmt.Errorf("error marshalling writer metadata %s: %v", path, err)
 	}
 
 	return d.PutContent(ctx, writerMetaObject(path), data)
@@ -117,7 +120,8 @@ func newObjectPartWriter(w *writer, chunkSize int64) *objectPartWriter {
 	}
 	pipeReader, pipeWriter := io.Pipe()
 	go func() {
-		opw.part, opw.err = w.driver.S3.PutObjectPart(w.driver.Bucket, w.driver.s3Path(w.path), w.uploadID, len(w.parts)+1, chunkSize, pipeReader, nil, nil)
+		opw.part, opw.err = w.driver.S3.PutObjectPart(w.driver.Bucket, w.driver.s3Path(w.generationPath()), w.uploadID, len(w.parts)+1, chunkSize, ioutil.NopCloser(pipeReader), nil, nil)
+		pipeReader.CloseWithError(opw.err)
 		close(opw.done)
 	}()
 	opw.WriteCloser = &zeroPaddedWriter{
@@ -134,9 +138,10 @@ func (opw *objectPartWriter) Close() error {
 	}
 	<-opw.done
 	if opw.err != nil {
-		opw.w.parts = append(opw.w.parts, opw.part)
+		return fmt.Errorf("error uploading object part %d for %s: %v", len(opw.w.parts)+1, opw.w.path, opw.err)
 	}
-	return opw.err
+	opw.w.parts = append(opw.w.parts, opw.part)
+	return nil
 }
 
 func newWriter(d *driver, path string, meta writerMeta) storagedriver.FileWriter {
@@ -144,12 +149,6 @@ func newWriter(d *driver, path string, meta writerMeta) storagedriver.FileWriter
 		driver: d,
 		path:   path,
 		meta:   meta,
-	}
-	w.chunker = Chunker{
-		Size: chunkSize,
-		New: func() io.WriteCloser {
-			return newObjectPartWriter(w, chunkSize)
-		},
 	}
 	return w
 }
@@ -169,7 +168,7 @@ func (w *writer) Write(p []byte) (int, error) {
 }
 
 func (w *writer) generationPath() string {
-	return fmt.Sprintf("%s.gen-%d", w.path, w.meta.Generation)
+	return fmt.Sprintf("%s.tmp/gen-%d", w.path, w.meta.Generation)
 }
 
 func (w *writer) ensureUploadID() error {
@@ -187,6 +186,13 @@ func (w *writer) ensureUploadID() error {
 
 	w.uploadID = uploadID
 
+	w.chunker = Chunker{
+		Size: chunkSize,
+		New: func() io.WriteCloser {
+			return newObjectPartWriter(w, chunkSize)
+		},
+	}
+
 	if w.meta.Generation > 1 {
 		return fmt.Errorf("TODO: copy data from the previous generation")
 	}
@@ -195,17 +201,25 @@ func (w *writer) ensureUploadID() error {
 }
 
 func (w *writer) abort() error {
-	/*
-		w.driver.S3.AbortMultipartUpload(&s3.AbortMultipartUploadInput{
-			Bucket:   aws.String(w.driver.Bucket),
-			Key:      aws.String(w.key),
-			UploadId: aws.String(w.uploadID),
-		})
-	*/
+	err := w.driver.S3.AbortMultipartUpload(w.driver.Bucket, w.driver.s3Path(w.generationPath()), w.uploadID)
+	if err != nil {
+		return fmt.Errorf("error aborting upload %s: %v", w.generationPath(), err)
+	}
+
+	w.uploadID = ""
+
 	return nil
 }
 
 func (w *writer) complete(ctx context.Context) error {
+	if w.uploadID == "" {
+		return nil
+	}
+
+	if err := w.chunker.Close(); err != nil {
+		return fmt.Errorf("error closing writer %s: %v", w.generationPath(), err)
+	}
+
 	var completedUploadedParts completedParts
 	for _, part := range w.parts {
 		completedUploadedParts = append(completedUploadedParts, minio.CompletePart{
@@ -216,11 +230,11 @@ func (w *writer) complete(ctx context.Context) error {
 
 	sort.Sort(completedUploadedParts)
 
-	err := w.driver.S3.CompleteMultipartUpload(w.driver.Bucket, w.driver.s3Path(w.path), w.uploadID, completedUploadedParts)
+	err := w.driver.S3.CompleteMultipartUpload(w.driver.Bucket, w.driver.s3Path(w.generationPath()), w.uploadID, completedUploadedParts)
 	if err != nil {
 		// best effort cleanup
 		_ = w.abort()
-		return err
+		return fmt.Errorf("error completing upload %s: %v", w.generationPath(), err)
 	}
 
 	w.uploadID = ""
@@ -241,24 +255,24 @@ func (w *writer) Close() error {
 
 	w.state = writerClosed
 
-	return w.chunker.Close()
+	return nil
 }
 
 func (w *writer) Cancel() error {
-	/*
-		if w.closed {
-			return fmt.Errorf("already closed")
-		} else if w.committed {
-			return fmt.Errorf("already committed")
-		}
-		w.cancelled = true
-		_, err := w.driver.S3.AbortMultipartUpload(&s3.AbortMultipartUploadInput{
-			Bucket:   aws.String(w.driver.Bucket),
-			Key:      aws.String(w.key),
-			UploadId: aws.String(w.uploadID),
-		})
+	if err := w.state.Err(); err != nil {
 		return err
-	*/
+	}
+
+	if err := w.abort(); err != nil {
+		return err
+	}
+
+	if err := w.driver.Delete(context.Background(), w.path); err != nil {
+		return fmt.Errorf("error deleting files after cancel: %v", err)
+	}
+
+	w.state = writerCancelled
+
 	return nil
 }
 
@@ -276,16 +290,18 @@ func (w *writer) Commit() error {
 		return err
 	}
 
-	src := minio.NewSourceInfo(w.driver.Bucket, w.driver.s3Path(w.path), nil)
+	src := minio.NewSourceInfo(w.driver.Bucket, w.driver.s3Path(w.generationPath()), nil)
 	src.SetRange(0, w.meta.Size-1)
 
 	if err := w.driver.S3.CopyObject(dst, src); err != nil {
-		return err
+		return fmt.Errorf("error copying object %v to %v: %v", src, dst, err)
 	}
 
 	w.state = writerCommitted
 
-	// TODO: remove .gen and .meta objects
+	if err := w.driver.Delete(context.Background(), w.path+".tmp"); err != nil {
+		return fmt.Errorf("error deleting temporary files after commit: %v", err)
+	}
 
 	return nil
 }
@@ -296,7 +312,9 @@ func createWriter(d *driver, path string) (storagedriver.FileWriter, error) {
 
 func resumeWriter(ctx context.Context, d *driver, path string) (storagedriver.FileWriter, error) {
 	meta, err := loadWriterMeta(ctx, d, path)
-	if err != nil {
+	if _, ok := err.(storagedriver.PathNotFoundError); ok {
+		meta = writerMeta{}
+	} else if err != nil {
 		return nil, err
 	}
 

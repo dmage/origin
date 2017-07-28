@@ -2,7 +2,7 @@ package s3
 
 import "io"
 
-var zeroBuffer [512]byte
+var zeroBuffer [32 << 10]byte
 
 type zeroPaddedWriter struct {
 	Size int64
