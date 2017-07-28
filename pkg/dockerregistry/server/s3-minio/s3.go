@@ -1,12 +1,6 @@
 // Package s3 provides a storagedriver.StorageDriver implementation to
 // store blobs in Amazon S3 cloud storage.
 //
-// This package leverages the official aws client library for interfacing with
-// S3.
-//
-// Because S3 is a key, value store the Stat call does not support last modification
-// time for directories (directories are an abstraction for key, value stores)
-//
 // Keep in mind that S3 guarantees only read-after-write consistency for new
 // objects, but no read-after-update or list-after-write consistency.
 package s3
@@ -41,6 +35,13 @@ const defaultChunkSize = minChunkSize
 // listMax is the largest amount of objects you can request from S3 in a list call.
 const listMax = 1000
 
+func parseError(path string, err error) error {
+	if e, ok := err.(minio.ErrorResponse); ok && e.Code == "NoSuchKey" {
+		return storagedriver.PathNotFoundError{Path: path}
+	}
+	return err
+}
+
 // DriverParameters is a struct that encapsulates all of the driver parameters after all values have been set.
 type DriverParameters struct {
 	AccessKey     string
@@ -50,24 +51,6 @@ type DriverParameters struct {
 	Secure        bool
 	ChunkSize     int64
 	RootDirectory string
-}
-
-func init() {
-	factory.Register(driverName, &s3DriverFactory{})
-}
-
-func parseError(path string, err error) error {
-	if e, ok := err.(minio.ErrorResponse); ok && e.Code == "NoSuchKey" {
-		return storagedriver.PathNotFoundError{Path: path}
-	}
-	return err
-}
-
-// s3DriverFactory implements the factory.StorageDriverFactory interface
-type s3DriverFactory struct{}
-
-func (factory *s3DriverFactory) Create(parameters map[string]interface{}) (storagedriver.StorageDriver, error) {
-	return FromParameters(parameters)
 }
 
 type driver struct {
@@ -85,92 +68,6 @@ type baseEmbed struct {
 // Objects are stored at absolute keys in the provided bucket.
 type Driver struct {
 	baseEmbed
-}
-
-// FromParameters constructs a new Driver with a given parameters map
-// Required parameters:
-// - accesskey
-// - secretkey
-// - endpoint
-// - bucket
-func FromParameters(parameters map[string]interface{}) (*Driver, error) {
-	// Providing no values for these is valid in case the user is authenticating
-	// with an IAM on an ec2 instance (in which case the instance credentials will
-	// be summoned when GetAuth is called)
-	accessKey := parameters["accesskey"]
-	if accessKey == nil {
-		accessKey = ""
-	}
-	secretKey := parameters["secretkey"]
-	if secretKey == nil {
-		secretKey = ""
-	}
-
-	regionEndpoint := parameters["regionendpoint"]
-	if regionEndpoint == nil {
-		regionEndpoint = ""
-	}
-
-	bucket := parameters["bucket"]
-	if bucket == nil || fmt.Sprint(bucket) == "" {
-		return nil, fmt.Errorf("No bucket parameter provided")
-	}
-
-	secureBool := true
-	secure := parameters["secure"]
-	switch secure := secure.(type) {
-	case string:
-		b, err := strconv.ParseBool(secure)
-		if err != nil {
-			return nil, fmt.Errorf("The secure parameter should be a boolean")
-		}
-		secureBool = b
-	case bool:
-		secureBool = secure
-	case nil:
-		// do nothing
-	default:
-		return nil, fmt.Errorf("The secure parameter should be a boolean")
-	}
-
-	chunkSize := int64(defaultChunkSize)
-	chunkSizeParam := parameters["chunksize"]
-	switch v := chunkSizeParam.(type) {
-	case string:
-		vv, err := strconv.ParseInt(v, 0, 64)
-		if err != nil {
-			return nil, fmt.Errorf("chunksize parameter must be an integer, %v invalid", chunkSizeParam)
-		}
-		chunkSize = vv
-	case int64:
-		chunkSize = v
-	case int, uint, int32, uint32, uint64:
-		chunkSize = reflect.ValueOf(v).Convert(reflect.TypeOf(chunkSize)).Int()
-	case nil:
-		// do nothing
-	default:
-		return nil, fmt.Errorf("invalid value for chunksize: %#v", chunkSizeParam)
-	}
-
-	if chunkSize < minChunkSize {
-		return nil, fmt.Errorf("The chunksize %#v parameter should be a number that is larger than or equal to %d", chunkSize, minChunkSize)
-	}
-
-	rootDirectory := parameters["rootdirectory"]
-	if rootDirectory == nil {
-		rootDirectory = ""
-	}
-
-	params := DriverParameters{
-		AccessKey:     fmt.Sprint(accessKey),
-		SecretKey:     fmt.Sprint(secretKey),
-		Bucket:        fmt.Sprint(bucket),
-		Endpoint:      fmt.Sprint(regionEndpoint),
-		Secure:        secureBool,
-		ChunkSize:     chunkSize,
-		RootDirectory: fmt.Sprint(rootDirectory),
-	}
-	return New(params)
 }
 
 // New constructs a new Driver with the given parameters.
@@ -196,7 +93,82 @@ func New(params DriverParameters) (*Driver, error) {
 	}, nil
 }
 
-// Implement the storagedriver.StorageDriver interface
+// FromParameters constructs a new Driver with a given parameters map.
+// Required parameters: accesskey, secretkey, endpoint, bucket.
+func FromParameters(parameters map[string]interface{}) (*Driver, error) {
+	getString := func(name string) string {
+		v := parameters[name]
+		if v == nil {
+			return ""
+		}
+		return fmt.Sprint(v)
+	}
+
+	getInt64 := func(name string, defaultValue int64) (int64, error) {
+		v, ok := parameters[name]
+		if !ok {
+			return defaultValue, nil
+		}
+		switch v := v.(type) {
+		case int64:
+			return v, nil
+		case int, uint, int32, uint32, uint64:
+			return reflect.ValueOf(v).Convert(reflect.TypeOf(int64(0))).Int(), nil
+		case string:
+			n, err := strconv.ParseInt(v, 0, 64)
+			if err == nil {
+				return n, nil
+			}
+		}
+		return defaultValue, fmt.Errorf("The %s parameter must be an integer, %v is invalid", name, v)
+	}
+
+	getBool := func(name string, defaultValue bool) (bool, error) {
+		v, ok := parameters[name]
+		if !ok {
+			return defaultValue, nil
+		}
+		switch v := v.(type) {
+		case bool:
+			return v, nil
+		case string:
+			b, err := strconv.ParseBool(v)
+			if err == nil {
+				return b, nil
+			}
+		}
+		return defaultValue, fmt.Errorf("The %s parameter should be a boolean, %v is invalid", name, v)
+	}
+
+	bucket := getString("bucket")
+	if bucket == "" {
+		return nil, fmt.Errorf("No bucket parameter provided")
+	}
+
+	secureBool, err := getBool("secure", true)
+	if err != nil {
+		return nil, err
+	}
+
+	chunkSize, err := getInt64("chunksize", defaultChunkSize)
+	if err != nil {
+		return nil, err
+	}
+	if chunkSize < minChunkSize {
+		return nil, fmt.Errorf("The chunksize %#v parameter should be a number that is larger than or equal to %d", chunkSize, minChunkSize)
+	}
+
+	params := DriverParameters{
+		AccessKey:     getString("accesskey"),
+		SecretKey:     getString("secretkey"),
+		Bucket:        bucket,
+		Endpoint:      getString("endpoint"),
+		Secure:        secureBool,
+		ChunkSize:     chunkSize,
+		RootDirectory: getString("rootdirectory"),
+	}
+	return New(params)
+}
 
 func (d *driver) Name() string {
 	return driverName
@@ -214,7 +186,8 @@ func (d *driver) GetContent(ctx context.Context, path string) ([]byte, error) {
 // PutContent stores the []byte content at a location designated by "path".
 func (d *driver) PutContent(ctx context.Context, path string, contents []byte) error {
 	_, err := d.S3.PutObject(d.Bucket, d.s3Path(path), int64(len(contents)), bytes.NewReader(contents), nil, nil, map[string][]string{
-		"Content-Type": []string{d.getContentType()},
+		"Content-Type": {d.getContentType()},
+		"x-amz-acl":    {d.getACL()},
 	})
 	return err
 }
@@ -425,4 +398,16 @@ func (d *driver) getContentType() string {
 
 func (d *driver) getACL() string {
 	return "private"
+}
+
+func init() {
+	factory.Register(driverName, &s3DriverFactory{})
+}
+
+type s3DriverFactory struct{}
+
+var _ factory.StorageDriverFactory = &s3DriverFactory{}
+
+func (factory *s3DriverFactory) Create(parameters map[string]interface{}) (storagedriver.StorageDriver, error) {
+	return FromParameters(parameters)
 }

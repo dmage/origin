@@ -1,14 +1,3 @@
-// Package s3 provides a storagedriver.StorageDriver implementation to
-// store blobs in Amazon S3 cloud storage.
-//
-// This package leverages the official aws client library for interfacing with
-// S3.
-//
-// Because S3 is a key, value store the Stat call does not support last modification
-// time for directories (directories are an abstraction for key, value stores)
-//
-// Keep in mind that S3 guarantees only read-after-write consistency for new
-// objects, but no read-after-update or list-after-write consistency.
 package s3
 
 import (
@@ -178,7 +167,10 @@ func (w *writer) ensureUploadID() error {
 
 	w.meta.Generation++
 
-	uploadID, err := w.driver.S3.NewMultipartUpload(w.driver.Bucket, w.driver.s3Path(w.generationPath()), nil)
+	uploadID, err := w.driver.S3.NewMultipartUpload(w.driver.Bucket, w.driver.s3Path(w.generationPath()), map[string][]string{
+		"Content-Type": {w.driver.getContentType()},
+		"x-amz-acl":    {w.driver.getACL()},
+	})
 	if err != nil {
 		w.meta.Generation--
 		return err
