@@ -40,13 +40,25 @@ func PrefersHTML(req *http.Request) bool {
 	return false
 }
 
+// isDefaultPort checks if port is a default port for scheme (80 for http, 443
+// for https). If scheme is empty, then all schemes are checked.
+func isDefaultPort(scheme, port string) bool {
+	switch port {
+	case "80":
+		return scheme == "" || scheme == "http"
+	case "443":
+		return scheme == "" || scheme == "https"
+	}
+	return false
+}
+
 // SchemeHost returns the scheme and host used to make this request.
 // Suitable for use to compute scheme/host in returned 302 redirect Location.
 // Note the returned host is not normalized, and may or may not contain a port.
 // Returned values are based on the following information:
 //
 // Host:
-// * X-Forwarded-Host/X-Forwarded-Port headers
+// * X-Forwarded-Host/X-Forwarded-Port/X-Forwarded-Proto headers
 // * Host field on the request (parsed from Host header)
 // * Host in the request's URL (parsed from Request-Line)
 //
@@ -68,29 +80,7 @@ func SchemeHost(req *http.Request) (string /*scheme*/, string /*host*/) {
 
 	forwardedProto := forwarded("Proto")
 	forwardedHost := forwarded("Host")
-	// If both X-Forwarded-Host and X-Forwarded-Port are sent, use the explicit port info
-	if forwardedPort := forwarded("Port"); len(forwardedHost) > 0 && len(forwardedPort) > 0 {
-		if h, _, err := net.SplitHostPort(forwardedHost); err == nil {
-			forwardedHost = net.JoinHostPort(h, forwardedPort)
-		} else {
-			forwardedHost = net.JoinHostPort(forwardedHost, forwardedPort)
-		}
-	}
-
-	host := ""
-	switch {
-	case len(forwardedHost) > 0:
-		host = forwardedHost
-	case len(req.Host) > 0:
-		host = req.Host
-	case len(req.URL.Host) > 0:
-		host = req.URL.Host
-	}
-
-	port := ""
-	if _, p, err := net.SplitHostPort(host); err == nil {
-		port = p
-	}
+	forwardedPort := forwarded("Port")
 
 	scheme := ""
 	switch {
@@ -100,11 +90,42 @@ func SchemeHost(req *http.Request) (string /*scheme*/, string /*host*/) {
 		scheme = "https"
 	case len(req.URL.Scheme) > 0:
 		scheme = req.URL.Scheme
-	case port == "443":
-		scheme = "https"
-	default:
-		scheme = "http"
 	}
 
-	return scheme, host
+	hostHeader := ""
+	switch {
+	case len(forwardedHost) > 0:
+		hostHeader = forwardedHost
+	case len(req.Host) > 0:
+		hostHeader = req.Host
+	case len(req.URL.Host) > 0:
+		hostHeader = req.URL.Host
+	}
+
+	host, port, err := net.SplitHostPort(hostHeader)
+	if err != nil {
+		host = hostHeader
+		port = ""
+	}
+
+	// If X-Forwarded-Port is sent, use the explicit port info
+	if len(forwardedPort) > 0 && (len(port) != 0 || !isDefaultPort(scheme, forwardedPort)) {
+		port = forwardedPort
+	}
+
+	if len(scheme) == 0 {
+		if port == "443" || len(port) == 0 && forwardedPort == "443" {
+			scheme = "https"
+		} else {
+			scheme = "http"
+		}
+	}
+
+	if len(port) != 0 {
+		hostHeader = net.JoinHostPort(host, port)
+	} else {
+		hostHeader = host
+	}
+
+	return scheme, hostHeader
 }
