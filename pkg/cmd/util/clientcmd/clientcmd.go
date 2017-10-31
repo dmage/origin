@@ -9,14 +9,10 @@ import (
 	"github.com/spf13/pflag"
 	restclient "k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
-	"k8s.io/kubernetes/pkg/api"
-	kclientset "k8s.io/kubernetes/pkg/client/clientset_generated/internalclientset"
 
 	"github.com/openshift/origin/pkg/cmd/flagtypes"
 	"github.com/openshift/origin/pkg/cmd/util"
 )
-
-const ConfigSyntax = " --master=<addr>"
 
 // Config contains all the necessary bits for client configuration
 type Config struct {
@@ -72,25 +68,6 @@ func (cfg *Config) Bind(flags *pflag.FlagSet) {
 func (cfg *Config) BindToFile() *Config {
 	cfg.clientConfig = DefaultClientConfig(pflag.NewFlagSet("empty", pflag.ContinueOnError))
 	return cfg
-}
-
-func EnvVars(host string, caData []byte, insecure bool, bearerTokenFile string) []api.EnvVar {
-	envvars := []api.EnvVar{
-		{Name: "KUBERNETES_MASTER", Value: host},
-		{Name: "OPENSHIFT_MASTER", Value: host},
-	}
-
-	if len(bearerTokenFile) > 0 {
-		envvars = append(envvars, api.EnvVar{Name: "BEARER_TOKEN_FILE", Value: bearerTokenFile})
-	}
-
-	if len(caData) > 0 {
-		envvars = append(envvars, api.EnvVar{Name: "OPENSHIFT_CA_DATA", Value: string(caData)})
-	} else if insecure {
-		envvars = append(envvars, api.EnvVar{Name: "OPENSHIFT_INSECURE", Value: "true"})
-	}
-
-	return envvars
 }
 
 func (cfg *Config) bindEnv() error {
@@ -203,16 +180,4 @@ func (cfg *Config) OpenShiftConfig() *restclient.Config {
 	}
 
 	return &osConfig
-}
-
-// Clients returns an OpenShift and a Kubernetes client from a given configuration
-func (cfg *Config) Clients() (kclientset.Interface, error) {
-	cfg.bindEnv()
-
-	kubeClientset, err := kclientset.NewForConfig(cfg.KubeConfig())
-	if err != nil {
-		return nil, fmt.Errorf("Unable to configure Kubernetes client: %v", err)
-	}
-
-	return kubeClientset, nil
 }
